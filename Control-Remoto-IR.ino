@@ -29,7 +29,6 @@
 #define AIR_CONDITIONER_ID "6a0d052ff9b5f15fa7d9732b"
 #define TV_ID             "69fef824977a0619a73af6df"
 
-
 // =====================================================
 // PINES
 // =====================================================
@@ -80,7 +79,7 @@ const uint8_t IR_NEC_BITS = 32;
 bool lightState = false;
 int lightBrightness = 100;
 
-// Control gradual para 50% y 25%
+// Secuencia gradual de luz
 bool lightSequenceActive = false;
 int lightDownStepsPending = 0;
 unsigned long lastLightStepTime = 0;
@@ -98,6 +97,13 @@ String acCurrentMode = "AUTO";
 // =====================================================
 int tvLastVolume = 10;
 int tvLastChannel = 1;
+
+// Secuencia gradual de volumen TV
+bool tvVolumeSequenceActive = false;
+int tvVolumeStepsPending = 0;
+uint32_t tvVolumeCodeToSend = 0;
+unsigned long lastTVVolumeStepTime = 0;
+const unsigned long TV_VOLUME_STEP_INTERVAL = 600; // 0.7 segundos
 
 // =====================================================
 // WIFI
@@ -170,8 +176,6 @@ void cancelLightSequence() {
 void startLightDownSequence(int steps) {
   lightSequenceActive = true;
   lightDownStepsPending = steps;
-
-  // Para que el primer paso se mande casi al instante
   lastLightStepTime = millis() - LIGHT_STEP_INTERVAL;
 
   Serial.print("[Luz] Secuencia de bajada iniciada. Pasos: ");
@@ -180,6 +184,7 @@ void startLightDownSequence(int steps) {
 
 void handleLightSequence() {
   if (!lightSequenceActive) return;
+
   if (lightDownStepsPending <= 0) {
     cancelLightSequence();
     Serial.println("[Luz] Secuencia terminada");
@@ -206,7 +211,7 @@ void handleLightSequence() {
 }
 
 // =====================================================
-// LUCES - CALLBACKS
+// LUCES - CALLBACKS SINRICPRO
 // =====================================================
 bool onLightPowerState(const String &deviceId, bool &state) {
   cancelLightSequence();
@@ -242,14 +247,11 @@ bool onLightBrightness(const String &deviceId, int &bri) {
     lightState = false;
     sendNECCommand(LIGHT_IR_OFF, "LUZ OFF");
   }
-
   else if (newBrightness >= 95) {
     lightBrightness = 100;
     lightState = true;
-
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
   }
-
   else if (newBrightness == 50) {
     lightBrightness = 50;
     lightState = true;
@@ -259,7 +261,6 @@ bool onLightBrightness(const String &deviceId, int &bri) {
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
     startLightDownSequence(3);
   }
-
   else if (newBrightness == 25) {
     lightBrightness = 25;
     lightState = true;
@@ -269,21 +270,16 @@ bool onLightBrightness(const String &deviceId, int &bri) {
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
     startLightDownSequence(6);
   }
-
   else if (newBrightness > lightBrightness) {
     lightBrightness = newBrightness;
     lightState = true;
-
     sendNECCommand(LIGHT_IR_UP, "SUBIR BRILLO LUZ");
   }
-
   else if (newBrightness < lightBrightness) {
     lightBrightness = newBrightness;
     lightState = true;
-
     sendNECCommand(LIGHT_IR_DOWN, "BAJAR BRILLO LUZ");
   }
-
   else {
     Serial.println("[Luz] El brillo ya estaba en ese valor");
   }
@@ -420,7 +416,65 @@ bool onACThermostatMode(const String &deviceId, String &mode) {
 }
 
 // =====================================================
-// TV - CALLBACKS BÁSICOS DE ALEXA
+// CONTROL GRADUAL DE VOLUMEN TV
+// =====================================================
+void cancelTVVolumeSequence() {
+  tvVolumeSequenceActive = false;
+  tvVolumeStepsPending = 0;
+  tvVolumeCodeToSend = 0;
+  lastTVVolumeStepTime = 0;
+}
+
+void startTVVolumeSequence(uint32_t code, int steps, const char *label) {
+  if (steps <= 0) return;
+
+  tvVolumeSequenceActive = true;
+  tvVolumeStepsPending = steps;
+  tvVolumeCodeToSend = code;
+
+  lastTVVolumeStepTime = millis() - TV_VOLUME_STEP_INTERVAL;
+
+  Serial.print("[TV Volumen] Secuencia iniciada: ");
+  Serial.print(label);
+  Serial.print(" | Pasos: ");
+  Serial.println(steps);
+}
+
+void handleTVVolumeSequence() {
+  if (!tvVolumeSequenceActive) return;
+
+  if (tvVolumeStepsPending <= 0) {
+    cancelTVVolumeSequence();
+    Serial.println("[TV Volumen] Secuencia terminada");
+    return;
+  }
+
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastTVVolumeStepTime >= TV_VOLUME_STEP_INTERVAL) {
+    lastTVVolumeStepTime = currentMillis;
+
+    if (tvVolumeCodeToSend == TV_VOLUME_UP) {
+      sendNECCommand(TV_VOLUME_UP, "TV VOLUMEN ARRIBA");
+    }
+    else if (tvVolumeCodeToSend == TV_VOLUME_DOWN) {
+      sendNECCommand(TV_VOLUME_DOWN, "TV VOLUMEN ABAJO");
+    }
+
+    tvVolumeStepsPending--;
+
+    Serial.print("[TV Volumen] Pasos restantes: ");
+    Serial.println(tvVolumeStepsPending);
+
+    if (tvVolumeStepsPending <= 0) {
+      cancelTVVolumeSequence();
+      Serial.println("[TV Volumen] Secuencia terminada");
+    }
+  }
+}
+
+// =====================================================
+// TV - CALLBACKS SINRICPRO
 // =====================================================
 bool onTVPowerState(const String &deviceId, bool &state) {
   Serial.println();
@@ -436,19 +490,93 @@ bool onTVPowerState(const String &deviceId, bool &state) {
 
 bool onTVVolume(const String &deviceId, int &volume) {
   Serial.println();
-  Serial.println("========== TV VOLUMEN ==========");
+  Serial.println("========== TV VOLUMEN / COMANDO ESPECIAL ==========");
 
-  Serial.print("[TV] Volumen anterior: ");
-  Serial.println(tvLastVolume);
+  volume = constrain(volume, 0, 100);
 
-  Serial.print("[TV] Volumen nuevo: ");
+  Serial.print("[TV] Volumen recibido: ");
   Serial.println(volume);
 
-  if (volume > tvLastVolume) {
-    sendNECCommand(TV_VOLUME_UP, "TV VOLUMEN ARRIBA");
+  // =====================================================
+  // VOLÚMENES ESPECIALES PARA FUNCIONES EXTRA
+  // =====================================================
+  if (volume == 91) {
+    Serial.println("[TV] Volumen especial 91 -> NETFLIX");
+    sendNECCommand(TV_NETFLIX, "TV NETFLIX");
+    return true;
   }
-  else if (volume < tvLastVolume) {
-    sendNECCommand(TV_VOLUME_DOWN, "TV VOLUMEN ABAJO");
+
+  if (volume == 92) {
+    Serial.println("[TV] Volumen especial 92 -> HOME");
+    sendNECCommand(TV_HOME, "TV PANTALLA PRINCIPAL");
+    return true;
+  }
+
+  if (volume == 93) {
+    Serial.println("[TV] Volumen especial 93 -> OK");
+    sendNECCommand(TV_OK, "TV OK");
+    return true;
+  }
+
+  if (volume == 94) {
+    Serial.println("[TV] Volumen especial 94 -> ARRIBA");
+    sendNECCommand(TV_UP, "TV ARRIBA");
+    return true;
+  }
+
+  if (volume == 95) {
+    Serial.println("[TV] Volumen especial 95 -> ABAJO");
+    sendNECCommand(TV_DOWN, "TV ABAJO");
+    return true;
+  }
+
+  if (volume == 96) {
+    Serial.println("[TV] Volumen especial 96 -> IZQUIERDA");
+    sendNECCommand(TV_LEFT, "TV IZQUIERDA");
+    return true;
+  }
+
+  if (volume == 97) {
+    Serial.println("[TV] Volumen especial 97 -> DERECHA");
+    sendNECCommand(TV_RIGHT, "TV DERECHA");
+    return true;
+  }
+
+  if (volume == 98) {
+    Serial.println("[TV] Volumen especial 98 -> REGRESAR");
+    sendNECCommand(TV_BACK, "TV REGRESAR");
+    return true;
+  }
+
+  if (volume == 99) {
+    Serial.println("[TV] Volumen especial 99 -> EXIT");
+    sendNECCommand(TV_EXIT, "TV EXIT");
+    return true;
+  }
+
+  // =====================================================
+  // CONTROL NORMAL DE VOLUMEN CON PULSOS CADA 0.7 s
+  // =====================================================
+  Serial.print("[TV] Volumen anterior interno: ");
+  Serial.println(tvLastVolume);
+
+  int diferencia = volume - tvLastVolume;
+
+  cancelTVVolumeSequence();
+
+  if (diferencia > 0) {
+    Serial.print("[TV] Subiendo volumen en pasos: ");
+    Serial.println(diferencia);
+
+    startTVVolumeSequence(TV_VOLUME_UP, diferencia, "SUBIR VOLUMEN");
+  }
+  else if (diferencia < 0) {
+    int pasos = abs(diferencia);
+
+    Serial.print("[TV] Bajando volumen en pasos: ");
+    Serial.println(pasos);
+
+    startTVVolumeSequence(TV_VOLUME_DOWN, pasos, "BAJAR VOLUMEN");
   }
   else {
     Serial.println("[TV] El volumen no cambió");
@@ -459,31 +587,41 @@ bool onTVVolume(const String &deviceId, int &volume) {
   return true;
 }
 
-bool onTVChangeChannel(const String &deviceId, String &channel) {
-  int newChannel = channel.toInt();
-
+// Esta versión tiene 3 parámetros porque SinricPro 4.1.0 lo pide así
+bool onTVAdjustVolume(const String &deviceId, int &volumeDelta, bool volumeDefault) {
   Serial.println();
-  Serial.println("========== TV CANAL ==========");
+  Serial.println("========== TV AJUSTE DE VOLUMEN ==========");
 
-  Serial.print("[TV] Canal recibido: ");
-  Serial.println(channel);
+  Serial.print("[TV] Ajuste recibido: ");
+  Serial.println(volumeDelta);
 
-  if (newChannel <= 0) {
-    Serial.println("[TV] Canal inválido");
-    return false;
+  Serial.print("[TV] Volumen default: ");
+  Serial.println(volumeDefault ? "SI" : "NO");
+
+  cancelTVVolumeSequence();
+
+  if (volumeDelta > 0) {
+    tvLastVolume = constrain(tvLastVolume + volumeDelta, 0, 100);
+
+    Serial.print("[TV] Subiendo volumen en pasos: ");
+    Serial.println(abs(volumeDelta));
+
+    startTVVolumeSequence(TV_VOLUME_UP, abs(volumeDelta), "SUBIR VOLUMEN");
   }
+  else if (volumeDelta < 0) {
+    tvLastVolume = constrain(tvLastVolume + volumeDelta, 0, 100);
 
-  if (newChannel > tvLastChannel) {
-    sendNECCommand(TV_CHANNEL_UP, "TV CANAL ARRIBA");
-  }
-  else if (newChannel < tvLastChannel) {
-    sendNECCommand(TV_CHANNEL_DOWN, "TV CANAL ABAJO");
+    Serial.print("[TV] Bajando volumen en pasos: ");
+    Serial.println(abs(volumeDelta));
+
+    startTVVolumeSequence(TV_VOLUME_DOWN, abs(volumeDelta), "BAJAR VOLUMEN");
   }
   else {
-    Serial.println("[TV] El canal no cambió");
+    Serial.println("[TV] No hubo ajuste");
   }
 
-  tvLastChannel = newChannel;
+  Serial.print("[TV] Volumen interno actual: ");
+  Serial.println(tvLastVolume);
 
   return true;
 }
@@ -503,53 +641,44 @@ void handleSerialCommands() {
   // =====================================================
   if (input == "luz on") {
     cancelLightSequence();
-
     lightState = true;
     if (lightBrightness == 0) lightBrightness = 100;
     sendNECCommand(LIGHT_IR_ON, "LUZ ON");
   }
   else if (input == "luz off") {
     cancelLightSequence();
-
     lightState = false;
     lightBrightness = 0;
     sendNECCommand(LIGHT_IR_OFF, "LUZ OFF");
   }
   else if (input == "luz max") {
     cancelLightSequence();
-
     lightBrightness = 100;
     lightState = true;
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
   }
   else if (input == "luz 50") {
     cancelLightSequence();
-
     lightBrightness = 50;
     lightState = true;
-
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
     startLightDownSequence(3);
   }
   else if (input == "luz 25") {
     cancelLightSequence();
-
     lightBrightness = 25;
     lightState = true;
-
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
     startLightDownSequence(6);
   }
   else if (input == "luz up") {
     cancelLightSequence();
-
     lightBrightness = constrain(lightBrightness + 10, 0, 100);
     lightState = true;
     sendNECCommand(LIGHT_IR_UP, "SUBIR LUZ");
   }
   else if (input == "luz down") {
     cancelLightSequence();
-
     lightBrightness = constrain(lightBrightness - 10, 0, 100);
 
     if (lightBrightness == 0) {
@@ -610,10 +739,14 @@ void handleSerialCommands() {
     sendNECCommand(TV_POWER, "TV POWER");
   }
   else if (input == "tv volup") {
-    sendNECCommand(TV_VOLUME_UP, "TV VOLUMEN ARRIBA");
+    startTVVolumeSequence(TV_VOLUME_UP, 1, "SUBIR VOLUMEN");
   }
   else if (input == "tv voldown") {
-    sendNECCommand(TV_VOLUME_DOWN, "TV VOLUMEN ABAJO");
+    startTVVolumeSequence(TV_VOLUME_DOWN, 1, "BAJAR VOLUMEN");
+  }
+  else if (input.startsWith("tv vol ")) {
+    int v = input.substring(7).toInt();
+    onTVVolume(TV_ID, v);
   }
   else if (input == "tv chup") {
     sendNECCommand(TV_CHANNEL_UP, "TV CANAL ARRIBA");
@@ -659,43 +792,29 @@ void handleSerialCommands() {
     Serial.println();
 
     Serial.println("LUCES:");
-    Serial.println("  luz on");
-    Serial.println("  luz off");
-    Serial.println("  luz max");
-    Serial.println("  luz 50");
-    Serial.println("  luz 25");
-    Serial.println("  luz up");
-    Serial.println("  luz down");
-    Serial.println("  luz bri 50");
-    Serial.println("  luz bri 25");
+    Serial.println("  luz on / luz off / luz max / luz 50 / luz 25");
+    Serial.println("  luz up / luz down / luz bri 50 / luz bri 25");
     Serial.println();
 
     Serial.println("AIRE:");
-    Serial.println("  ac on");
-    Serial.println("  ac off");
-    Serial.println("  ac temp 24");
-    Serial.println("  ac mode cool");
-    Serial.println("  ac mode heat");
-    Serial.println("  ac mode auto");
-    Serial.println("  ac mode dry");
-    Serial.println("  ac mode fan");
+    Serial.println("  ac on / ac off / ac temp 24 / ac mode cool");
     Serial.println();
 
     Serial.println("TV:");
     Serial.println("  tv power");
-    Serial.println("  tv volup");
-    Serial.println("  tv voldown");
-    Serial.println("  tv chup");
-    Serial.println("  tv chdown");
-    Serial.println("  tv netflix");
-    Serial.println("  tv ok");
-    Serial.println("  tv up");
-    Serial.println("  tv down");
-    Serial.println("  tv left");
-    Serial.println("  tv right");
-    Serial.println("  tv home");
-    Serial.println("  tv back");
-    Serial.println("  tv exit");
+    Serial.println("  tv volup / tv voldown / tv vol 15");
+    Serial.println("  tv vol 91  -> Netflix");
+    Serial.println("  tv vol 92  -> Home");
+    Serial.println("  tv vol 93  -> OK");
+    Serial.println("  tv vol 94  -> Arriba");
+    Serial.println("  tv vol 95  -> Abajo");
+    Serial.println("  tv vol 96  -> Izquierda");
+    Serial.println("  tv vol 97  -> Derecha");
+    Serial.println("  tv vol 98  -> Regresar");
+    Serial.println("  tv vol 99  -> Exit");
+    Serial.println("  tv chup / tv chdown");
+    Serial.println("  tv netflix / tv ok / tv up / tv down");
+    Serial.println("  tv left / tv right / tv home / tv back / tv exit");
   }
 }
 
@@ -733,7 +852,6 @@ void setupSinricPro() {
   // LUZ
   // ---------------------
   SinricProLight &myLight = SinricPro[LIGHT_ID];
-
   myLight.onPowerState(onLightPowerState);
   myLight.onBrightness(onLightBrightness);
   myLight.onAdjustBrightness(onLightAdjustBrightness);
@@ -742,7 +860,6 @@ void setupSinricPro() {
   // AIRE
   // ---------------------
   SinricProWindowAC &myAC = SinricPro[AIR_CONDITIONER_ID];
-
   myAC.onPowerState(onACPowerState);
   myAC.onTargetTemperature(onACTargetTemperature);
   myAC.onThermostatMode(onACThermostatMode);
@@ -751,10 +868,9 @@ void setupSinricPro() {
   // TV
   // ---------------------
   SinricProTV &myTV = SinricPro[TV_ID];
-
   myTV.onPowerState(onTVPowerState);
   myTV.onSetVolume(onTVVolume);
-  myTV.onChangeChannel(onTVChangeChannel);
+  myTV.onAdjustVolume(onTVAdjustVolume);
 
   // ---------------------
   // EVENTOS SINRIC
@@ -785,6 +901,7 @@ void setup() {
   Serial.println();
   Serial.println("==============================================");
   Serial.println(" ESP32 + SINRICPRO + LUZ + AIRE + TV + IR");
+  Serial.println(" VERSION LIMPIA - SIN CANALES ESPECIALES");
   Serial.println("==============================================");
 
   irsend.begin();
@@ -813,16 +930,27 @@ void setup() {
   Serial.println("  Alexa, pon aire en 24 grados");
   Serial.println("  Alexa, prende televisor");
   Serial.println("  Alexa, apaga televisor");
-  Serial.println("  Alexa, sube volumen del televisor");
+  Serial.println("  Alexa, pon volumen de televisor a 15");
+  Serial.println();
+
+  Serial.println("Comandos especiales por volumen:");
+  Serial.println("  Alexa, pon volumen de televisor a 91  -> Netflix");
+  Serial.println("  Alexa, pon volumen de televisor a 92  -> Home");
+  Serial.println("  Alexa, pon volumen de televisor a 93  -> OK");
+  Serial.println("  Alexa, pon volumen de televisor a 94  -> Arriba");
+  Serial.println("  Alexa, pon volumen de televisor a 95  -> Abajo");
+  Serial.println("  Alexa, pon volumen de televisor a 96  -> Izquierda");
+  Serial.println("  Alexa, pon volumen de televisor a 97  -> Derecha");
+  Serial.println("  Alexa, pon volumen de televisor a 98  -> Regresar");
+  Serial.println("  Alexa, pon volumen de televisor a 99  -> Exit");
   Serial.println();
 
   Serial.println("Comandos por Monitor Serial:");
-  Serial.println("  luz on / luz off / luz max / luz 50 / luz 25");
-  Serial.println("  luz up / luz down / luz bri 50 / luz bri 25");
-  Serial.println("  ac on / ac off / ac temp 24 / ac mode cool");
-  Serial.println("  tv power / tv volup / tv voldown / tv chup / tv chdown");
-  Serial.println("  tv netflix / tv ok / tv up / tv down / tv left / tv right");
-  Serial.println("  tv home / tv back / tv exit");
+  Serial.println("  tv vol 15");
+  Serial.println("  tv vol 91");
+  Serial.println("  tv netflix");
+  Serial.println("  tv home");
+  Serial.println("  tv ok");
   Serial.println("==============================================");
 }
 
@@ -830,13 +958,17 @@ void setup() {
 // LOOP
 // =====================================================
 void loop() {
-  SinricPro.handle();
-
   reconnectWiFi();
+
+  SinricPro.handle();
 
   handleSerialCommands();
 
-  handleIRReceiver();
+  // Desactivado para evitar ruido del receptor KY-022.
+  // Actívalo solo si quieres leer códigos IR.
+  // handleIRReceiver();
 
   handleLightSequence();
+
+  handleTVVolumeSequence();
 }
