@@ -87,24 +87,29 @@ El pin utilizado para el emisor IR fue:
 
 ```cpp
 const uint16_t IR_SEND_PIN = 4;
+```
 
 ### 3.3 Configuración en SinricPro y Alexa
 
 Se crearon dispositivos virtuales en SinricPro para poder controlarlos desde Alexa:
 
-Televisor.
-Luz.
-Aire acondicionado.
+- Televisor.
+- Luz.
+- Aire acondicionado.
 
 Luego se vinculó la cuenta de SinricPro con Alexa para que los dispositivos puedan ser reconocidos mediante comandos de voz.
 
-El dispositivo del televisor se nombró como Control IR, para evitar que Alexa lo confunda con una Smart TV o una skill de video.
-3.4 Pruebas desde Monitor Serial
+El dispositivo del televisor se nombró como **Control IR**, para evitar que Alexa lo confunda con una Smart TV o una skill de video.
+
+---
+
+### 3.4 Pruebas desde Monitor Serial
 
 Antes de probar con Alexa, se verificaron los comandos desde el Monitor Serial.
 
 Ejemplos:
 
+```txt
 tv power
 tv netflix
 tv home
@@ -113,15 +118,19 @@ luz on
 luz 50
 ac on
 ac temp 24
+```
 
 Esto permitió comprobar que el ESP32 enviaba correctamente los códigos IR antes de integrar el sistema con comandos de voz.
 
-3.5 Pruebas con Alexa
+---
+
+### 3.5 Pruebas con Alexa
 
 Finalmente se realizaron pruebas usando comandos de voz.
 
 Ejemplos:
 
+```txt
 Alexa, prende Control IR
 Alexa, apaga Control IR
 Alexa, pon volumen de Control IR a 91
@@ -130,98 +139,125 @@ Alexa, prende luces
 Alexa, pon luces al 50 por ciento
 Alexa, prende aire
 Alexa, pon aire en 24 grados
-4. Explicación del funcionamiento
+```
+
+---
+
+## 4. Explicación del funcionamiento
 
 El funcionamiento general del sistema sigue este flujo:
 
+```txt
 Usuario → Alexa → SinricPro → ESP32 → Diodo emisor IR → Dispositivo
+```
 
-El usuario da una orden de voz a Alexa.
-Alexa envía el comando a SinricPro.
-SinricPro transmite la orden al ESP32 mediante WiFi.
-El ESP32 interpreta el comando recibido.
-Luego selecciona el código IR correspondiente.
+El usuario da una orden de voz a Alexa.  
+Alexa envía el comando a SinricPro.  
+SinricPro transmite la orden al ESP32 mediante WiFi.  
+El ESP32 interpreta el comando recibido.  
+Luego selecciona el código IR correspondiente.  
 Finalmente, el diodo emisor infrarrojo transmite la señal hacia el dispositivo.
 
 De esta manera, el ESP32 actúa como un control remoto físico, pero controlado por voz.
-5. Control del televisor
+
+---
+
+## 5. Control del televisor
 
 El televisor se controla usando señales IR con protocolo NEC de 32 bits.
 
 El comando de encendido y apagado usa el código:
 
+```cpp
 TV_POWER = 0x20DF10EF;
+```
 
 Este botón funciona como un comando alternado. Si la televisión está apagada, la enciende; si está encendida, la apaga.
 
-También se programó el control de volumen. El televisor no recibe directamente un valor absoluto de volumen, sino pulsos de VOL+ o VOL-. Por eso, el ESP32 compara el volumen anterior con el nuevo valor recibido y envía varios pulsos según sea necesario.
+También se programó el control de volumen. El televisor no recibe directamente un valor absoluto de volumen, sino pulsos de `VOL+` o `VOL-`. Por eso, el ESP32 compara el volumen anterior con el nuevo valor recibido y envía varios pulsos según sea necesario.
 
-6. Comandos especiales por volumen
+---
+
+## 6. Comandos especiales por volumen
 
 Durante las pruebas se observó que Alexa no enviaba correctamente comandos como “abrir Netflix” o “ir a Home”, porque los interpretaba como funciones de una Smart TV.
 
 Para solucionar esto, se usaron valores especiales de volumen.
 
-Volumen en Alexa	Acción ejecutada
-91	Netflix
-92	Home
-93	OK
-94	Arriba
-95	Abajo
-96	Izquierda
-97	Derecha
-98	Regresar
-99	Exit
+| Volumen en Alexa | Acción ejecutada |
+|---:|---|
+| 91 | Netflix |
+| 92 | Home |
+| 93 | OK |
+| 94 | Arriba |
+| 95 | Abajo |
+| 96 | Izquierda |
+| 97 | Derecha |
+| 98 | Regresar |
+| 99 | Exit |
 
 Ejemplo:
 
+```txt
 Alexa, pon volumen de Control IR a 91
+```
 
-Aunque Alexa envía un valor de volumen, el ESP32 interpreta el número 91 como el comando para abrir Netflix.
+Aunque Alexa envía un valor de volumen, el ESP32 interpreta el número `91` como el comando para abrir Netflix.
 
-7. Control de luces
+---
+
+## 7. Control de luces
 
 Para la luz se usaron comandos IR directos y secuencias.
 
-Acción	Código IR
-Encender	0x20DF15EA
-Apagar	0x20DF11EE
-Brillo máximo	0x20DFA956
-Subir brillo	0x20DF9966
-Bajar brillo	0x20DFD926
+| Acción | Código IR |
+|---|---|
+| Encender | `0x20DF15EA` |
+| Apagar | `0x20DF11EE` |
+| Brillo máximo | `0x20DFA956` |
+| Subir brillo | `0x20DF9966` |
+| Bajar brillo | `0x20DFD926` |
 
-Para el brillo al 50 % y 25 %, no se usó un código fijo.
+Para el brillo al 50 % y 25 %, no se usó un código fijo.  
 El ESP32 primero coloca la luz al máximo y luego baja varios pasos.
 
-Comando	Funcionamiento
-100 %	Brillo máximo
-50 %	Brillo máximo y baja 3 pasos
-25 %	Brillo máximo y baja 6 pasos
-8. Control del aire acondicionado
+| Comando | Funcionamiento |
+|---|---|
+| 100 % | Brillo máximo |
+| 50 % | Brillo máximo y baja 3 pasos |
+| 25 % | Brillo máximo y baja 6 pasos |
+
+---
+
+## 8. Control del aire acondicionado
 
 El aire acondicionado trabaja de forma diferente a la televisión, porque no usa solamente códigos simples.
 
-En este caso se emplea la librería ir_Midea.h, que permite enviar tramas IR con información de:
+En este caso se emplea la librería `ir_Midea.h`, que permite enviar tramas IR con información de:
 
-Encendido.
-Apagado.
-Temperatura.
-Modo de operación.
-Ventilación.
+- Encendido.
+- Apagado.
+- Temperatura.
+- Modo de operación.
+- Ventilación.
 
 Ejemplo:
 
+```txt
 Alexa, pon aire en 24 grados
+```
 
 El ESP32 recibe el valor de temperatura, actualiza el estado interno y envía una trama IR compatible con el aire acondicionado.
 
-9. Resultados obtenidos
+---
+
+## 9. Resultados obtenidos
 
 El sistema logró controlar correctamente los tres dispositivos principales:
 
-Televisión.
-Luz.
-Aire acondicionado.
+- Televisión.
+- Luz.
+- Aire acondicionado.
 
 Se comprobó que la televisión respondía correctamente cuando el emisor IR estaba bien orientado hacia el receptor del equipo.
 
