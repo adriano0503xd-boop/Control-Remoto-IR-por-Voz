@@ -15,8 +15,8 @@
 // =====================================================
 // WIFI
 // =====================================================
-#define WIFI_SSID         "Samsung"
-#define WIFI_PASS         "09012005"
+#define WIFI_SSID         "CANALES-1"
+#define WIFI_PASS         "70379884Can"
 
 // =====================================================
 // SINRIC PRO
@@ -24,22 +24,23 @@
 #define APP_KEY           "75ec0de5-298e-4033-83b1-1fcc96fd1102"
 #define APP_SECRET        "3af08942-95e1-4e2f-a185-2d6c74d12b99-c82ce60a-3b26-4813-bde6-1f915cf4242b"
 
-// IDs de dispositivos en SinricPro
+// IDs de dispositivos
 #define LIGHT_ID          "6a0e45aebaa50bf9bf38ec47"
 #define AIR_CONDITIONER_ID "6a0d052ff9b5f15fa7d9732b"
 #define TV_ID             "69fef824977a0619a73af6df"
 
+
 // =====================================================
 // PINES
 // =====================================================
-const uint16_t IR_SEND_PIN = 4;   // Emisor IR para luz, aire y TV
-const uint16_t IR_RECV_PIN = 2;   // Receptor IR opcional para el aire
+const uint16_t IR_SEND_PIN = 4;   // Emisor IR
+const uint16_t IR_RECV_PIN = 2;   // Receptor IR KY-022
 
 // =====================================================
 // OBJETOS IR
 // =====================================================
-IRsend irsend(IR_SEND_PIN);             // Para códigos NEC: luz y TV
-IRMideaAC ac(IR_SEND_PIN);              // Para aire Midea
+IRsend irsend(IR_SEND_PIN);
+IRMideaAC ac(IR_SEND_PIN);
 IRrecv irrecv(IR_RECV_PIN, 1024, 50, true);
 decode_results results;
 
@@ -60,12 +61,16 @@ const uint32_t TV_VOLUME_UP    = 0x20DF40BF;
 const uint32_t TV_VOLUME_DOWN  = 0x20DFC03F;
 const uint32_t TV_CHANNEL_UP   = 0x20DF00FF;
 const uint32_t TV_CHANNEL_DOWN = 0x20DF807F;
-const uint32_t TV_LEFT         = 0x20DFE01F;  // Izquierda
-const uint32_t TV_RIGHT        = 0x20DF609F;  // Derecha
-const uint32_t TV_HOME         = 0x20DF3EC1;  // Pantalla principal
-const uint32_t TV_BACK         = 0x20DF14EB;  // Regresar
-const uint32_t TV_EXIT         = 0x20DFDA25;  // Exit
 
+const uint32_t TV_NETFLIX      = 0x20DF6A95;
+const uint32_t TV_OK           = 0x20DF22DD;
+const uint32_t TV_UP           = 0x20DF02FD;
+const uint32_t TV_DOWN         = 0x20DF827D;
+const uint32_t TV_LEFT         = 0x20DFE01F;
+const uint32_t TV_RIGHT        = 0x20DF609F;
+const uint32_t TV_HOME         = 0x20DF3EC1;
+const uint32_t TV_BACK         = 0x20DF14EB;
+const uint32_t TV_EXIT         = 0x20DFDA25;
 
 const uint8_t IR_NEC_BITS = 32;
 
@@ -73,11 +78,16 @@ const uint8_t IR_NEC_BITS = 32;
 // ESTADO LOCAL - LUCES
 // =====================================================
 bool lightState = false;
-int lightBrightness = 50;
-const int LIGHT_BRIGHTNESS_STEP = 10;
+int lightBrightness = 100;
+
+// Control gradual para 50% y 25%
+bool lightSequenceActive = false;
+int lightDownStepsPending = 0;
+unsigned long lastLightStepTime = 0;
+const unsigned long LIGHT_STEP_INTERVAL = 1000; // 1 segundo
 
 // =====================================================
-// ESTADO LOCAL - AIRE ACONDICIONADO
+// ESTADO LOCAL - AIRE
 // =====================================================
 bool acPowerState = false;
 uint8_t acTargetTemp = 25;
@@ -114,7 +124,7 @@ void setupWiFi() {
 void reconnectWiFi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
-  Serial.println("[WiFi] Conexión perdida. Reconectando...");
+  Serial.println("[WiFi] Perdido. Reconectando...");
 
   WiFi.disconnect();
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -138,7 +148,7 @@ void reconnectWiFi() {
 }
 
 // =====================================================
-// FUNCIÓN IR NEC PARA LUZ Y TV
+// FUNCIÓN GENERAL PARA ENVIAR IR NEC
 // =====================================================
 void sendNECCommand(uint32_t code, const char *label) {
   Serial.print("[IR NEC] Enviando: ");
@@ -149,17 +159,66 @@ void sendNECCommand(uint32_t code, const char *label) {
 }
 
 // =====================================================
-// LUCES - CALLBACKS SINRICPRO
+// CONTROL GRADUAL DE LUCES
+// =====================================================
+void cancelLightSequence() {
+  lightSequenceActive = false;
+  lightDownStepsPending = 0;
+  lastLightStepTime = 0;
+}
+
+void startLightDownSequence(int steps) {
+  lightSequenceActive = true;
+  lightDownStepsPending = steps;
+
+  // Para que el primer paso se mande casi al instante
+  lastLightStepTime = millis() - LIGHT_STEP_INTERVAL;
+
+  Serial.print("[Luz] Secuencia de bajada iniciada. Pasos: ");
+  Serial.println(steps);
+}
+
+void handleLightSequence() {
+  if (!lightSequenceActive) return;
+  if (lightDownStepsPending <= 0) {
+    cancelLightSequence();
+    Serial.println("[Luz] Secuencia terminada");
+    return;
+  }
+
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - lastLightStepTime >= LIGHT_STEP_INTERVAL) {
+    lastLightStepTime = currentMillis;
+
+    sendNECCommand(LIGHT_IR_DOWN, "BAJAR 1 PASO LUZ");
+
+    lightDownStepsPending--;
+
+    Serial.print("[Luz] Pasos restantes: ");
+    Serial.println(lightDownStepsPending);
+
+    if (lightDownStepsPending <= 0) {
+      cancelLightSequence();
+      Serial.println("[Luz] Secuencia terminada");
+    }
+  }
+}
+
+// =====================================================
+// LUCES - CALLBACKS
 // =====================================================
 bool onLightPowerState(const String &deviceId, bool &state) {
+  cancelLightSequence();
+
   Serial.println();
   Serial.println("========== LUZ ==========");
-  Serial.printf("[Luz] PowerState: %s\n", state ? "ON" : "OFF");
+  Serial.printf("[Luz] Estado: %s\n", state ? "ON" : "OFF");
 
   lightState = state;
 
   if (lightState) {
-    if (lightBrightness == 0) lightBrightness = 50;
+    if (lightBrightness == 0) lightBrightness = 100;
     sendNECCommand(LIGHT_IR_ON, "LUZ ON");
   } else {
     lightBrightness = 0;
@@ -172,6 +231,8 @@ bool onLightPowerState(const String &deviceId, bool &state) {
 bool onLightBrightness(const String &deviceId, int &bri) {
   int newBrightness = constrain(bri, 0, 100);
 
+  cancelLightSequence();
+
   Serial.println();
   Serial.println("========== LUZ BRILLO ==========");
   Serial.printf("[Luz] Brillo recibido: %d%%\n", newBrightness);
@@ -181,21 +242,48 @@ bool onLightBrightness(const String &deviceId, int &bri) {
     lightState = false;
     sendNECCommand(LIGHT_IR_OFF, "LUZ OFF");
   }
-  else if (newBrightness >= 90) {
+
+  else if (newBrightness >= 95) {
     lightBrightness = 100;
     lightState = true;
+
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
   }
+
+  else if (newBrightness == 50) {
+    lightBrightness = 50;
+    lightState = true;
+
+    Serial.println("[Luz] Modo 50%: MAX + bajar 3 pasos");
+
+    sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
+    startLightDownSequence(3);
+  }
+
+  else if (newBrightness == 25) {
+    lightBrightness = 25;
+    lightState = true;
+
+    Serial.println("[Luz] Modo 25%: MAX + bajar 6 pasos");
+
+    sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
+    startLightDownSequence(6);
+  }
+
   else if (newBrightness > lightBrightness) {
     lightBrightness = newBrightness;
     lightState = true;
+
     sendNECCommand(LIGHT_IR_UP, "SUBIR BRILLO LUZ");
   }
+
   else if (newBrightness < lightBrightness) {
     lightBrightness = newBrightness;
     lightState = true;
+
     sendNECCommand(LIGHT_IR_DOWN, "BAJAR BRILLO LUZ");
   }
+
   else {
     Serial.println("[Luz] El brillo ya estaba en ese valor");
   }
@@ -204,17 +292,19 @@ bool onLightBrightness(const String &deviceId, int &bri) {
 }
 
 bool onLightAdjustBrightness(const String &deviceId, int &brightnessDelta) {
+  cancelLightSequence();
+
   Serial.println();
-  Serial.println("========== LUZ AJUSTE BRILLO ==========");
+  Serial.println("========== LUZ AJUSTE ==========");
   Serial.printf("[Luz] Ajuste recibido: %+d%%\n", brightnessDelta);
 
   if (brightnessDelta > 0) {
-    lightBrightness = constrain(lightBrightness + LIGHT_BRIGHTNESS_STEP, 0, 100);
+    lightBrightness = constrain(lightBrightness + 10, 0, 100);
     lightState = true;
     sendNECCommand(LIGHT_IR_UP, "SUBIR 1 PASO LUZ");
   }
   else if (brightnessDelta < 0) {
-    lightBrightness = constrain(lightBrightness - LIGHT_BRIGHTNESS_STEP, 0, 100);
+    lightBrightness = constrain(lightBrightness - 10, 0, 100);
 
     if (lightBrightness == 0) {
       lightState = false;
@@ -225,10 +315,10 @@ bool onLightAdjustBrightness(const String &deviceId, int &brightnessDelta) {
     }
   }
   else {
-    Serial.println("[Luz] No hubo cambio de brillo");
+    Serial.println("[Luz] No hubo cambio");
   }
 
-  Serial.print("[Luz] Brillo interno actual: ");
+  Serial.print("[Luz] Brillo interno: ");
   Serial.print(lightBrightness);
   Serial.println("%");
 
@@ -237,11 +327,11 @@ bool onLightAdjustBrightness(const String &deviceId, int &brightnessDelta) {
 }
 
 // =====================================================
-// AIRE ACONDICIONADO - FUNCIONES
+// AIRE ACONDICIONADO
 // =====================================================
 void applyACState() {
   Serial.println();
-  Serial.println("========== AIRE ACONDICIONADO ==========");
+  Serial.println("========== AIRE ==========");
 
   if (acPowerState) {
     ac.on();
@@ -252,31 +342,34 @@ void applyACState() {
   }
 
   ac.setTemp(acTargetTemp);
-  Serial.printf("[AC] Temperatura: %u C\n", acTargetTemp);
 
   if (acCurrentMode == "COOL") {
     ac.setMode(kMideaACCool);
-  } 
+  }
   else if (acCurrentMode == "HEAT") {
     ac.setMode(kMideaACHeat);
-  } 
+  }
   else if (acCurrentMode == "DRY") {
     ac.setMode(kMideaACDry);
-  } 
+  }
   else if (acCurrentMode == "FAN") {
     ac.setMode(kMideaACFan);
-  } 
+  }
   else {
     ac.setMode(kMideaACAuto);
     acCurrentMode = "AUTO";
   }
 
+  ac.setFan(kMideaACFanAuto);
+
+  Serial.print("[AC] Temperatura: ");
+  Serial.print(acTargetTemp);
+  Serial.println(" C");
+
   Serial.print("[AC] Modo: ");
   Serial.println(acCurrentMode);
 
-  ac.setFan(kMideaACFanAuto);
   ac.send();
-
   delay(120);
 }
 
@@ -284,9 +377,6 @@ bool isValidACTemperature(float temperature) {
   return temperature >= 17 && temperature <= 30;
 }
 
-// =====================================================
-// AIRE ACONDICIONADO - CALLBACKS SINRICPRO
-// =====================================================
 bool onACPowerState(const String &deviceId, bool &state) {
   acPowerState = state;
 
@@ -330,7 +420,7 @@ bool onACThermostatMode(const String &deviceId, String &mode) {
 }
 
 // =====================================================
-// TV - CALLBACKS SINRICPRO
+// TV - CALLBACKS BÁSICOS DE ALEXA
 // =====================================================
 bool onTVPowerState(const String &deviceId, bool &state) {
   Serial.println();
@@ -339,7 +429,6 @@ bool onTVPowerState(const String &deviceId, bool &state) {
   Serial.print("[TV] Alexa pidió: ");
   Serial.println(state ? "ENCENDER" : "APAGAR");
 
-  // En muchos televisores el botón POWER es toggle
   sendNECCommand(TV_POWER, "TV POWER");
 
   return true;
@@ -357,15 +446,16 @@ bool onTVVolume(const String &deviceId, int &volume) {
 
   if (volume > tvLastVolume) {
     sendNECCommand(TV_VOLUME_UP, "TV VOLUMEN ARRIBA");
-  } 
+  }
   else if (volume < tvLastVolume) {
     sendNECCommand(TV_VOLUME_DOWN, "TV VOLUMEN ABAJO");
-  } 
+  }
   else {
     Serial.println("[TV] El volumen no cambió");
   }
 
   tvLastVolume = volume;
+
   return true;
 }
 
@@ -385,15 +475,16 @@ bool onTVChangeChannel(const String &deviceId, String &channel) {
 
   if (newChannel > tvLastChannel) {
     sendNECCommand(TV_CHANNEL_UP, "TV CANAL ARRIBA");
-  } 
+  }
   else if (newChannel < tvLastChannel) {
     sendNECCommand(TV_CHANNEL_DOWN, "TV CANAL ABAJO");
-  } 
+  }
   else {
     Serial.println("[TV] El canal no cambió");
   }
 
   tvLastChannel = newChannel;
+
   return true;
 }
 
@@ -407,31 +498,59 @@ void handleSerialCommands() {
   input.trim();
   input.toLowerCase();
 
-  // ---------------------
+  // =====================================================
   // COMANDOS DE LUZ
-  // ---------------------
+  // =====================================================
   if (input == "luz on") {
+    cancelLightSequence();
+
     lightState = true;
-    if (lightBrightness == 0) lightBrightness = 50;
+    if (lightBrightness == 0) lightBrightness = 100;
     sendNECCommand(LIGHT_IR_ON, "LUZ ON");
   }
   else if (input == "luz off") {
+    cancelLightSequence();
+
     lightState = false;
     lightBrightness = 0;
     sendNECCommand(LIGHT_IR_OFF, "LUZ OFF");
   }
   else if (input == "luz max") {
+    cancelLightSequence();
+
     lightBrightness = 100;
     lightState = true;
     sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
   }
+  else if (input == "luz 50") {
+    cancelLightSequence();
+
+    lightBrightness = 50;
+    lightState = true;
+
+    sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
+    startLightDownSequence(3);
+  }
+  else if (input == "luz 25") {
+    cancelLightSequence();
+
+    lightBrightness = 25;
+    lightState = true;
+
+    sendNECCommand(LIGHT_IR_MAX, "LUZ MAXIMA");
+    startLightDownSequence(6);
+  }
   else if (input == "luz up") {
-    lightBrightness = constrain(lightBrightness + LIGHT_BRIGHTNESS_STEP, 0, 100);
+    cancelLightSequence();
+
+    lightBrightness = constrain(lightBrightness + 10, 0, 100);
     lightState = true;
     sendNECCommand(LIGHT_IR_UP, "SUBIR LUZ");
   }
   else if (input == "luz down") {
-    lightBrightness = constrain(lightBrightness - LIGHT_BRIGHTNESS_STEP, 0, 100);
+    cancelLightSequence();
+
+    lightBrightness = constrain(lightBrightness - 10, 0, 100);
 
     if (lightBrightness == 0) {
       lightState = false;
@@ -447,9 +566,9 @@ void handleSerialCommands() {
     onLightBrightness(LIGHT_ID, tempBrightness);
   }
 
-  // ---------------------
+  // =====================================================
   // COMANDOS DE AIRE
-  // ---------------------
+  // =====================================================
   else if (input == "ac on") {
     acPowerState = true;
     acTargetTemp = 25;
@@ -484,9 +603,9 @@ void handleSerialCommands() {
     }
   }
 
-  // ---------------------
+  // =====================================================
   // COMANDOS DE TV
-  // ---------------------
+  // =====================================================
   else if (input == "tv power") {
     sendNECCommand(TV_POWER, "TV POWER");
   }
@@ -502,23 +621,55 @@ void handleSerialCommands() {
   else if (input == "tv chdown") {
     sendNECCommand(TV_CHANNEL_DOWN, "TV CANAL ABAJO");
   }
+  else if (input == "tv netflix") {
+    sendNECCommand(TV_NETFLIX, "TV NETFLIX");
+  }
+  else if (input == "tv ok") {
+    sendNECCommand(TV_OK, "TV OK");
+  }
+  else if (input == "tv up") {
+    sendNECCommand(TV_UP, "TV ARRIBA");
+  }
+  else if (input == "tv down") {
+    sendNECCommand(TV_DOWN, "TV ABAJO");
+  }
+  else if (input == "tv left") {
+    sendNECCommand(TV_LEFT, "TV IZQUIERDA");
+  }
+  else if (input == "tv right") {
+    sendNECCommand(TV_RIGHT, "TV DERECHA");
+  }
+  else if (input == "tv home") {
+    sendNECCommand(TV_HOME, "TV PANTALLA PRINCIPAL");
+  }
+  else if (input == "tv back") {
+    sendNECCommand(TV_BACK, "TV REGRESAR");
+  }
+  else if (input == "tv exit") {
+    sendNECCommand(TV_EXIT, "TV EXIT");
+  }
 
-  // ---------------------
+  // =====================================================
   // COMANDO NO VÁLIDO
-  // ---------------------
+  // =====================================================
   else {
     Serial.println();
     Serial.println("Comando no válido.");
     Serial.println("Usa estos comandos:");
     Serial.println();
+
     Serial.println("LUCES:");
     Serial.println("  luz on");
     Serial.println("  luz off");
     Serial.println("  luz max");
+    Serial.println("  luz 50");
+    Serial.println("  luz 25");
     Serial.println("  luz up");
     Serial.println("  luz down");
     Serial.println("  luz bri 50");
+    Serial.println("  luz bri 25");
     Serial.println();
+
     Serial.println("AIRE:");
     Serial.println("  ac on");
     Serial.println("  ac off");
@@ -529,12 +680,22 @@ void handleSerialCommands() {
     Serial.println("  ac mode dry");
     Serial.println("  ac mode fan");
     Serial.println();
+
     Serial.println("TV:");
     Serial.println("  tv power");
     Serial.println("  tv volup");
     Serial.println("  tv voldown");
     Serial.println("  tv chup");
     Serial.println("  tv chdown");
+    Serial.println("  tv netflix");
+    Serial.println("  tv ok");
+    Serial.println("  tv up");
+    Serial.println("  tv down");
+    Serial.println("  tv left");
+    Serial.println("  tv right");
+    Serial.println("  tv home");
+    Serial.println("  tv back");
+    Serial.println("  tv exit");
   }
 }
 
@@ -553,6 +714,9 @@ void handleIRReceiver() {
     serialPrintUint64(results.value, HEX);
     Serial.println();
 
+    Serial.print("Bits: ");
+    Serial.println(results.bits);
+
     if (results.decode_type == MIDEA) {
       Serial.println("[IR RX] Se detectó una trama MIDEA");
     }
@@ -566,31 +730,34 @@ void handleIRReceiver() {
 // =====================================================
 void setupSinricPro() {
   // ---------------------
-  // Dispositivo luz
+  // LUZ
   // ---------------------
   SinricProLight &myLight = SinricPro[LIGHT_ID];
+
   myLight.onPowerState(onLightPowerState);
   myLight.onBrightness(onLightBrightness);
   myLight.onAdjustBrightness(onLightAdjustBrightness);
 
   // ---------------------
-  // Dispositivo aire
+  // AIRE
   // ---------------------
   SinricProWindowAC &myAC = SinricPro[AIR_CONDITIONER_ID];
+
   myAC.onPowerState(onACPowerState);
   myAC.onTargetTemperature(onACTargetTemperature);
   myAC.onThermostatMode(onACThermostatMode);
 
   // ---------------------
-  // Dispositivo TV
+  // TV
   // ---------------------
   SinricProTV &myTV = SinricPro[TV_ID];
+
   myTV.onPowerState(onTVPowerState);
   myTV.onSetVolume(onTVVolume);
   myTV.onChangeChannel(onTVChangeChannel);
 
   // ---------------------
-  // Eventos de conexión
+  // EVENTOS SINRIC
   // ---------------------
   SinricPro.onConnected([]() {
     Serial.println();
@@ -620,14 +787,10 @@ void setup() {
   Serial.println(" ESP32 + SINRICPRO + LUZ + AIRE + TV + IR");
   Serial.println("==============================================");
 
-  // Iniciar emisores IR
   irsend.begin();
   ac.begin();
-
-  // Iniciar receptor IR opcional
   irrecv.enableIRIn();
 
-  // Estado inicial del aire
   acPowerState = false;
   acTargetTemp = 25;
   acCurrentMode = "AUTO";
@@ -638,11 +801,13 @@ void setup() {
   Serial.println();
   Serial.println("Sistema listo.");
   Serial.println();
+
   Serial.println("Comandos Alexa sugeridos:");
   Serial.println("  Alexa, prende luces");
   Serial.println("  Alexa, apaga luces");
-  Serial.println("  Alexa, sube brillo de luces");
-  Serial.println("  Alexa, baja brillo de luces");
+  Serial.println("  Alexa, pon luces al 100 por ciento");
+  Serial.println("  Alexa, pon luces al 50 por ciento");
+  Serial.println("  Alexa, pon luces al 25 por ciento");
   Serial.println("  Alexa, prende aire");
   Serial.println("  Alexa, apaga aire");
   Serial.println("  Alexa, pon aire en 24 grados");
@@ -650,10 +815,14 @@ void setup() {
   Serial.println("  Alexa, apaga televisor");
   Serial.println("  Alexa, sube volumen del televisor");
   Serial.println();
-  Serial.println("Comandos por monitor serial:");
-  Serial.println("  luz on / luz off / luz max / luz up / luz down / luz bri 50");
+
+  Serial.println("Comandos por Monitor Serial:");
+  Serial.println("  luz on / luz off / luz max / luz 50 / luz 25");
+  Serial.println("  luz up / luz down / luz bri 50 / luz bri 25");
   Serial.println("  ac on / ac off / ac temp 24 / ac mode cool");
   Serial.println("  tv power / tv volup / tv voldown / tv chup / tv chdown");
+  Serial.println("  tv netflix / tv ok / tv up / tv down / tv left / tv right");
+  Serial.println("  tv home / tv back / tv exit");
   Serial.println("==============================================");
 }
 
@@ -668,4 +837,6 @@ void loop() {
   handleSerialCommands();
 
   handleIRReceiver();
+
+  handleLightSequence();
 }
